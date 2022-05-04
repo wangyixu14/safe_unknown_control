@@ -404,6 +404,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() and not args.no_gpu else 'cpu')
+    print(device)
+    assert False
     manual_seed(args.seed)
 
     if args.debug:
