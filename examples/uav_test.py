@@ -26,10 +26,20 @@ from torch import optim
 from torch.distributions import Normal
 import time
 import matplotlib
-
+import random
 import torchsde
-
+import numpy.linalg as LA
 seed = 'uav_test'
+
+_RX = -8.0
+_RY = -6.0
+_RZ = 9.0
+_UNSAFE_CENTER = (-4.5, -4)
+_UNSAFE_RADIUS = 0.25
+_UNSAFE_HEIGHT = 2.0
+_BARRIER_ITERATIONS = 100
+_NUM = 200
+_TOTAL_ITERATIONS = 500
 
 class LinearScheduler(object):
     def __init__(self, iters, maxval=1.0):
@@ -220,7 +230,7 @@ class LatentSDE(nn.Module):
         return _xs
 
     def setlatentInit(self):
-        for _ in range(10):
+        for _ in range(20):
             initx0 = self.projector(self.pz0_mean)
             target = torch.Tensor([[-8, -6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]]).to('cuda')
            
@@ -230,7 +240,25 @@ class LatentSDE(nn.Module):
             opt.step()
 
 
-def make_dataset(batch_size, control, device, N=88):
+def metric(xs, N):
+    unsafe = 0
+    total_return = []
+
+    for i in range(len(xs)):
+        reward = 0
+        for j in range(N):
+            if (xs[i][j][0] - _UNSAFE_CENTER[0])**2 + (xs[i][j][1] - _UNSAFE_CENTER[1])**2 <= 1 and -_UNSAFE_HEIGHT <= xs[i][j][2] and xs[i][j][2]<= _UNSAFE_HEIGHT+3:
+                unsafe += 1
+                break
+            reward -= LA.norm(xs[i][j][:3])
+            # reward += 0.3* LA.norm(xs[i][j][:3] - np.array([_UNSAFE_CENTER[0], _UNSAFE_CENTER[1], 1]))
+            if i <= 0:
+                print(xs[i][j][:3], LA.norm(xs[i][j][:3]), reward)
+        total_return.append(reward)
+    print(unsafe, np.mean(total_return), np.std(total_return))
+    assert False
+
+def make_dataset(batch_size, control, device, latent_sde, N=80):
     # --------------------------- load environment ----------------------------------------
     uav = JinEnv.Quadrotor()
     uav.initDyn(Jx=1, Jy=1, Jz=1, mass=1, l=1, c=0.01)
@@ -238,7 +266,11 @@ def make_dataset(batch_size, control, device, N=88):
 
     demos = []  # for data storage
 
-    for bs in range(2):
+    Barrier = BarrierNN(state_size=13, hidden_size=64).to('cuda')
+    Barrier.load_state_dict(torch.load('./train/uav/barrier/barrier72099.pth'))
+
+    barrier_set = []
+    for bs in range(batch_size):
         # set initial state
         u = np.random.normal(0, 1)
         v = np.random.normal(0, 1)
@@ -265,6 +297,11 @@ def make_dataset(batch_size, control, device, N=88):
             diffusion = np.hstack((diffusion, qwb_noise))
             tra.append(state)
             curr_u = control(torch.from_numpy(state).to(device).float()).detach().cpu().numpy()
+            # print(curr_u)
+            barrier_value = Barrier(torch.from_numpy(state).to(device).float()).detach().cpu().numpy()[0]
+            barrier_set.append(barrier_value)
+            if bs == 0:
+                print(barrier_value)
             state = env_dyn(state, curr_u).full().flatten() + diffusion
         tra = np.array(tra)
         demos.append(tra)
@@ -273,61 +310,157 @@ def make_dataset(batch_size, control, device, N=88):
     ts = torch.linspace(0, N*0.02, steps=N, device=device)
     xs = torch.swapaxes(xs, 0, 1)
 
-    print(demos[0].shape)
+    print('demo:', demos.shape)
+    # metric(demos, N)
 
-    uav.play_animation(wing_len=1.5, state_traj=demos[0][:70], state_traj_ref=None, dt=0.02, save_option=1)
-    return xs, ts
-
-
-def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
-    fig = plt.figure(figsize=(20, 9))
+    fig = plt.figure(figsize=(20, 8))
     gs = gridspec.GridSpec(1, 2)
     ax00 = fig.add_subplot(gs[0, 0])
     ax01 = fig.add_subplot(gs[0, 1])
 
+    Init = np.load('uav_init.npy')
+    Unsafe = np.load('uav_unsafe.npy')
+    Lie = np.load('uav_lie.npy')
+    ax00.plot(list(range(len(Lie))),Lie, label='Lie')
+    ax00.plot(list(range(len(Unsafe))), Unsafe, label='$\min_{x_{u} \in X_u} B(x_{u})$')
+    ax00.plot(list(range(len(Init))), Init, label='$\max_{x_{0} \in X_0} B(x_{0})$')
+    ax00.legend(fontsize=25)
+    ax00.set_title('Barrier Loss on $\hat{\mathcal{M}}$', fontsize=30)    
+
+    barrier_set = np.array(barrier_set)
+    barrier_set = np.reshape(barrier_set, (-1, N))
+    print(barrier_set.shape, len(barrier_set[0]))
+    ax01.plot(np.arange(len(barrier_set[0]))*0.02, np.mean(barrier_set, axis=0), label='$B(s)$ on $\mathcal{M}$')
+    ax01.fill_between(np.arange(len(barrier_set[0]))*0.02, np.mean(barrier_set, axis=0) - np.std(barrier_set, axis=0), np.mean(barrier_set, axis=0) + np.std(barrier_set, axis=0), alpha=0.3)
+    ax01.set_title('Barrier Value on $\mathcal{M}& \hat{\mathcal{M}}$', fontsize=30)
+    ax01.set_xlabel('$t/s$', labelpad=0., fontsize=23)
+
+    bm_vis = torchsde.BrownianInterval(
+        t0=0, t1=0.02*N, size=(batch_size, 20,), device=device, levy_area_approximation="space-time")
+    ts = torch.linspace(0, (N-5)*0.02, steps=N-5, device=device)
+    _xs = latent_sde.sample(batch_size=xs.size(1), ts=ts, bm=bm_vis).detach().cpu().numpy()
+    _gene_barrier = Barrier(torch.from_numpy(_xs).to(device).float()).squeeze().detach().cpu().numpy()
+    print('the Max barrier is: ', np.amax(_gene_barrier))
+    assert False
+
+    ax01.plot(np.arange(len(_gene_barrier))*0.02, np.mean(_gene_barrier, axis=1), label='$B(\hat{s})$ on $\hat{\mathcal{M}}$')
+    ax01.fill_between(np.arange(len(_gene_barrier))*0.02, np.mean(_gene_barrier, axis=1) - np.std(_gene_barrier, axis=1), np.mean(_gene_barrier, axis=1) + np.std(_gene_barrier, axis=1), alpha=0.3)
+    ax01.legend(fontsize=25)
+    # print('_xs shape is: ', _xs.shape, _gene_barrier.shape)
+    # assert False
+
+    lab = ax00.get_xticklabels() + ax00.get_yticklabels() + ax01.get_xticklabels() + ax01.get_yticklabels()
+    for l in lab:
+        l.set_fontsize(18)  
+
+    # plt.savefig('uav_barrier.pdf', bbox_inches='tight')
+    # assert False
+    # uav.play_animation(wing_len=0.5, state_traj=demos[0][:], state_traj_ref=None, dt=0.02, save_option=1)
+
+
+    sample_tra = _xs[:, 1, :]
+    print(sample_tra.shape, demos[0][:].shape, sample_tra[-1], demos[0][-1])
+    uav.play_animation(wing_len=0.5, real_traj = demos[0][:], state_traj=sample_tra, state_traj_ref=None, dt=0.02, save_option=1)
+    assert False
+
+    return xs, ts
+
+
+# def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
+#     fig = plt.figure(figsize=(20, 9))
+#     gs = gridspec.GridSpec(1, 2)
+#     ax00 = fig.add_subplot(gs[0, 0])
+#     ax01 = fig.add_subplot(gs[0, 1])
+
+#     # Left plot: data.
+#     ax00.add_patch(matplotlib.patches.Circle((-4.5, -3.5), 0.25, color='pink'))
+#     z1, z2 = np.split(xs.cpu().numpy()[:, :, :2], indices_or_sections=2, axis=-1)
+#     [ax00.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
+#     ax00.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
+#     # ax00.set_xlabel('$z_1$', labelpad=0., fontsize=16)
+#     # ax00.set_ylabel('$z_2$', labelpad=.5, fontsize=16)
+#     ax00.set_title('Data', fontsize=20)
+
+#     # Right plot: samples from learned model.
+#     xs = latent_sde.sample(batch_size=xs.size(1), ts=ts, bm=bm_vis).detach().cpu().numpy()
+#     z1, z2 = np.split(xs[:, :, :2], indices_or_sections=2, axis=-1)
+    
+#     ax01.add_patch(matplotlib.patches.Circle((-4.5, -3.5), 0.25, color='pink'))
+#     [ax01.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
+#     ax01.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
+#     ax01.set_title('Samples', fontsize=20)
+
+#     plt.savefig(img_path, bbox_inches='tight')
+#     plt.close()
+
+def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
+    fig = plt.figure(figsize=(20, 18))
+    gs = gridspec.GridSpec(2, 2)
+    ax00 = fig.add_subplot(gs[0, 0])
+    ax01 = fig.add_subplot(gs[0, 1])
+    ax10 = fig.add_subplot(gs[1, 0])
+    ax11 = fig.add_subplot(gs[1, 1])
+
     # Left plot: data.
-    ax00.add_patch(matplotlib.patches.Circle((-5, -3), 1, color='pink'))
-    z1, z2 = np.split(xs.cpu().numpy()[:, :, :2], indices_or_sections=2, axis=-1)
+    ax00.add_patch(matplotlib.patches.Circle(_UNSAFE_CENTER, _UNSAFE_RADIUS, color='pink'))
+    z1, z2, z3 = np.split(xs.cpu().numpy()[:, :, :3], indices_or_sections=3, axis=-1)
     [ax00.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax00.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
     # ax00.set_xlabel('$z_1$', labelpad=0., fontsize=16)
     # ax00.set_ylabel('$z_2$', labelpad=.5, fontsize=16)
     ax00.set_title('Data', fontsize=20)
+    ax10.add_patch(matplotlib.patches.Rectangle((_UNSAFE_CENTER[0]-_UNSAFE_RADIUS, -_UNSAFE_HEIGHT), 2*_UNSAFE_RADIUS, 2*_UNSAFE_HEIGHT + 2, color='pink'))
+    [ax10.plot(z1[:, i, 0], z3[:, i, 0]) for i in range(num_samples)]
+    ax10.scatter(z1[0, :num_samples, 0], z3[0, :num_samples, 0], marker='x')
 
     # Right plot: samples from learned model.
     xs = latent_sde.sample(batch_size=xs.size(1), ts=ts, bm=bm_vis).detach().cpu().numpy()
-    z1, z2 = np.split(xs[:, :, :2], indices_or_sections=2, axis=-1)
+    z1, z2, z3 = np.split(xs[:, :, :3], indices_or_sections=3, axis=-1)
     
-    ax01.add_patch(matplotlib.patches.Circle((-5, -3), 1, color='pink'))
+    ax01.add_patch(matplotlib.patches.Circle(_UNSAFE_CENTER, _UNSAFE_RADIUS, color='pink'))
     [ax01.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax01.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
     ax01.set_title('Samples', fontsize=20)
+    ax11.add_patch(matplotlib.patches.Rectangle((_UNSAFE_CENTER[0]-_UNSAFE_RADIUS, -_UNSAFE_HEIGHT), 2*_UNSAFE_RADIUS, 2*_UNSAFE_HEIGHT + 2, color='pink'))
+    [ax11.plot(z1[:, i, 0], z3[:, i, 0]) for i in range(num_samples)]
+    ax11.scatter(z1[0, :num_samples, 0], z3[0, :num_samples, 0], marker='x')
 
     plt.savefig(img_path, bbox_inches='tight')
     plt.close()
 
-def trainBarrier(latent_sde, batch_size=1024, device='cuda', Test=False, Conly=True):
+def trainBarrier(latent_sde, batch_size, device='cuda', Test=False, Conly=True):
 
     Barrier = BarrierNN(state_size=13, hidden_size=64).to(device)
+    # Barrier.load_state_dict(torch.load('./train/uav/barrier/barrier99_good.pth'))
 
-    if Test:
-        Barrier.load_state_dict(torch.load('./train/Barrier.pth'))
-        print('here')
 
-    optimizer = torch.optim.Adam(Barrier.parameters())
+    optimizer = torch.optim.Adam(Barrier.parameters(), lr = 1e-3)
     if Conly:
-        con_opt = torch.optim.Adam(latent_sde.c_net.parameters(), lr=3e-5)
+        con_opt = torch.optim.Adam(latent_sde.c_net.parameters(), lr=1e-4)
     else:
-        con_opt = torch.optim.Adam(latent_sde.parameters(), lr=3e-5)
+        con_opt = torch.optim.Adam(latent_sde.parameters(), lr=1e-4)
+
+    reward_weight = 0.1 * np.ones(13)
+    reward_weight[:2] = 10 * np.ones(2)
+    reward_weight[2] = 50
+    reward_weight[5] = 5
+    reward_weight = torch.from_numpy(reward_weight).to(device).float()
+
     ### samples ###
-    for it in range(100):
+    weight = np.linspace(0, 8, 100)
+    Lie_list = []
+    Unsafe_min_list = []
+    Init_max_list = []
+
+    for it in range(_BARRIER_ITERATIONS):
+        t0 = time.time()
         _x0 = []
         for _ in range(batch_size):
             u = np.random.normal(0, 1)
             v = np.random.normal(0, 1)
             w = np.random.normal(0, 1)
             norm = (u**2 + v*v + w*w)**(0.5)
-            r_I = [u / norm * 0.1  - 8, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
+            r_I = [u / norm * 0.1  + _RX, v / norm * 0.1 + _RY, w / norm * 0.1 + _RZ] 
             ini_v_I = [0.0, 0.0, 0.0]
             ini_q = [1.0, 0.0, 0.0, 0.0]
             ini_w = [0.0, 0.0, 0.0]
@@ -338,96 +471,97 @@ def trainBarrier(latent_sde, batch_size=1024, device='cuda', Test=False, Conly=T
 
         _xu = []
         for _ in range(batch_size):
+            ur = np.random.normal(0, 1)
+            vr = np.random.normal(0, 1)
+            norm = (ur*ur + vr*vr)**(0.5)
+            r_I = [ur / norm * _UNSAFE_RADIUS + _UNSAFE_CENTER[0], vr / norm * _UNSAFE_RADIUS  + _UNSAFE_CENTER[1], np.random.uniform(-_UNSAFE_HEIGHT, _UNSAFE_HEIGHT + 2)] 
             u = np.random.normal(0, 1)
             v = np.random.normal(0, 1)
             p = np.random.normal(0, 1)
             q = np.random.normal(0, 1)
-            norm = (u**2 + v*v)**(0.5)
-            r_I = [u / norm - 5, v / norm - 3, np.random.uniform(-10, 10)] 
-            ini_v_I = [np.random.uniform(-10, 10), np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
+            ini_v_I = [np.random.uniform(-5, 5), np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
             
             norm2 = (u**2 + v*v + q*q + p*p)**(0.5)
             ini_q = [u/norm2, v/norm2, p/norm2, q/norm2]
-            ini_w = [np.random.uniform(-10, 10), np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
+            ini_w = [np.random.uniform(-5, 5), np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
             ini_state = r_I + ini_v_I + ini_q + ini_w
             _xu.append(np.array(ini_state))
         _xu = torch.from_numpy(np.array(_xu)).to(device).float()
         
-        # x = 6*torch.rand(size=(batch_size, 1)) - 3
-        # x = -1 + 1*torch.rand(size=(batch_size, 1))
-        # y = 1.2 + 0.5*torch.rand(size=(batch_size, 1))
-        # _xu = torch.cat((x, y), dim=1).to(device)
 
-        # x = 6*torch.rand(size=(batch_size, 1)) - 3
-        # y = 6*torch.rand(size=(batch_size, 1)) - 3
-        # _xx = torch.cat((x, y), dim=1).to(device)
-
-        ts = torch.linspace(0, 1, steps=50, device=device)
+        ts = torch.linspace(0, 1.7, steps=85, device=device)
         _xs = latent_sde.sample(batch_size=_x0.size(0), ts=ts)
-        # print(torch.norm(_xs, dim=2).shape,torch.norm(_xs, dim=2), torch.mean(torch.norm(_xs, dim=2), dim=(1)).shape)
-        # assert False
-        R = 10*torch.mean(torch.norm(_xs, dim=2), dim=(1))[-1]
+
+        _xs_reward = reward_weight * _xs
+        R = torch.sum(torch.mean(torch.norm(_xs_reward, dim=2), dim=(1)))
    
         optimizer.zero_grad()
-        con_opt.zero_grad()
+        # con_opt.zero_grad()
+        barrier_xs = Barrier(_xs)
 
+        # print(_xs[0].shape, _xs[0], _xs[-1], Barrier(_xs[-1]))
+        # assert False
+
+        ## random pick to compute Lie
+        ## 
         Lie = torch.mean(Barrier(_xs[-1]) - Barrier(_xs[0]))
         Lie_max = torch.max(Barrier(_xs[-1]) - Barrier(_xs[0]))
         for i in range(_xs.size(0) - 1):
-            Lie += torch.mean(Barrier(_xs[-1]) - Barrier(_xs[i+1])) 
+            Lie += torch.abs(torch.mean(Barrier(_xs[i+1]) - Barrier(_xs[i]))) 
             Lie_max = max(torch.max(Barrier(_xs[i+1]) - Barrier(_xs[i])), Lie_max) 
-        Lie /= 10
+        
+        # steps = list(range(_xs.size(0)))
+        # Lie = torch.mean(Barrier(_xs[-1]) - Barrier(_xs[0]))
+        # Lie_max = torch.mean(Barrier(_xs[-1]) - Barrier(_xs[0]))
+        # for _ in range(100):
+        #     sample = random.sample(steps, 2)
+        #     assert sample[0] != sample[1]
+        #     lo = min(sample[0], sample[1])
+        #     hi = max(sample[0], sample[1])
+        #     assert hi > lo
+        #     Lie += torch.mean(Barrier(_xs[hi]) - Barrier(_xs[lo])) 
+        #     Lie_max = max(torch.max(Barrier(_xs[hi]) - Barrier(_xs[lo])), Lie_max) 
 
-        Unsafe = torch.mean(1 - Barrier(_xu))
-        Unsafe_min = torch.min(Barrier(_xu))
-        Init = torch.mean(Barrier(_x0))
-        # print(Barrier(_x0), Barrier(_x0).shape)
-        Init_max = torch.max(Barrier(_x0))
+        barrier_xu = Barrier(_xu)
+        barrier_x0 = Barrier(_x0)
+        Unsafe = torch.mean(1 - barrier_xu)
+        Unsafe_min = torch.min(barrier_xu)
+        Init = torch.mean(barrier_x0)
+        Init_max = torch.max(barrier_x0)
 
-        # if Test:
-        #     print(Unsafe.item(), Unsafe_min, Init.item(), 
-        #         Init_max, Lie.item(), Lie_max)
-        #     assert False
 
-        # if Lie_max <= 0.005 and Unsafe_min >= 0.99 and Init_max < 0.02:
-        #     print(torch.max(Barrier(_x0)))
-        #     print('learned controller is: ', latent_sde.c_net.lin.weight.data)
-        #     torch.save(Barrier.state_dict(), './train/Barrier'+seed+'.pth')
-            
-        #     mean_list = []
-        #     std_list = []
-        #     for j in range(_xs.size(0)):
-        #         value = Barrier(_xs[j]).detach().cpu().numpy()
-        #         mean_list.append(np.mean(value))
-        #         std_list.append(np.std(value))
+        loss = Lie / 2.5 + weight[99-it]*((1 - Unsafe_min) + Init_max)
+        # loss = Lie / 20 + weight[99-it]*((1 - Unsafe_min) + Init_max)
 
-        #     mean_list = np.array(mean_list)
-        #     std_list = np.array(std_list)
-        #     plt.clf()
-        #     plt.plot(np.arange(len(mean_list)), mean_list)
-        #     plt.fill_between(np.arange(len(mean_list)), mean_list - std_list,  mean_list + std_list, alpha=0.3)
-        #     plt.savefig('barrier'+seed+'.png')
-        #     return True
-
-        loss = Lie_max + (1 - Unsafe_min) + Init_max + R
-        # loss = R
+        Lie_list.append(Lie.item())
+        Unsafe_min_list.append(Unsafe_min.item())
+        Init_max_list.append(Init_max.item())
+        # else:
+        #     loss = 10*Lie_max
+        # loss = Lie / 20 + weight[99-it]*((1 - Unsafe) + Init)
         loss.backward()
-        if it % 10 == 0:
-            print('Iter:{}, loss:{:.2f}, Reward:-{:.2f}, Lie:{:.2f}, Unsafe:{:.2f}, Init:{:.2f}, Lie_max:{:.2f}, Unsafe_min:{:.2f}, Init_max:{:.2f}'
-                .format(it,  loss.item(), R.item(), Lie.item(), Unsafe.item(), Init.item(), Lie_max.item(), Unsafe_min.item(), Init_max.item()))
-            # print(latent_sde.c_net.lin.weight.data, latent_sde.c_net.lin.weight.data.grad)
-
-            # print(latent_sde.c_net.lin1.weight.data[:5])
+        if (it+1) % 1 == 0:
+            print('Iter:{}, loss:{:.4f}, Reward:-{:.4f}, Lie:{:.4f}, Unsafe:{:.4f}, Init:{:.4f}, Lie_max:{:.4f}, Unsafe_min:{:.4f}, Init_max:{:.4f}'
+                .format(it,  loss.item(), R.item(), Lie.item(), Unsafe.item(), Init.item(), Lie_max.item(), Unsafe_min.item(), Init_max.item()), flush=True)
+            torch.save(Barrier.state_dict(), './train/uav/barrier/barrier720' + str(it) + '.pth')
         optimizer.step()
-        con_opt.step()
+        # con_opt.step()
+    # print(Lie_list, Unsafe_min_list)
+    plt.figure(2)
+    plt.plot(list(range(len(Lie_list))),Lie_list, label='Lie')
+    plt.plot(list(range(len(Unsafe_min_list))), Unsafe_min_list, label='$\min_{x_{u} \in X_u} B(x_{u})$')
+    plt.plot(list(range(len(Init_max_list))), Init_max_list, label='$\max_{x_{0} \in X_0} B(x_{0})$')
+    plt.legend()
+    np.save('uav_lie.npy', np.array(Lie_list))
+    np.save('uav_unsafe.npy', np.array(Unsafe_min_list))
+    np.save('uav_init.npy', np.array(Init_max_list))
+    plt.savefig('uav_barrier_loss.pdf', bbox_inches='tight')
 
-
-    # return False
 
 
 def main(
-        batch_size=1024,
-        latent_size=16,
+        batch_size=500,
+        latent_size=20,
         data_size=13,
         context_size=64,
         hidden_size=128,
@@ -453,7 +587,8 @@ def main(
         hidden_size=hidden_size,
     ).to(device)
 
-    checkpoint = torch.load('./train/uav/model_uav3_explore.pth')
+    # checkpoint = torch.load('./train/uav/0623_warmstart9/model_uav_v9_step_9100.pth')
+    checkpoint = torch.load('./train/uav/0623_warmstart6/model_uav_v6_step_20800.pth')
     latent_sde.pz0_mean = checkpoint['pz0_mean']
     latent_sde.pz0_logstd = checkpoint['pz0_logstd']
     latent_sde.h_net = checkpoint['h_net']
@@ -467,15 +602,14 @@ def main(
     
     latent_sde.setlatentInit()
     latent_sde.fixu = True
-    xs, ts = make_dataset(batch_size=batch_size, control=latent_sde.c_net, device=device)
+    xs, ts = make_dataset(batch_size=batch_size, control=latent_sde.c_net, device=device, latent_sde=latent_sde)
+    # assert False
     bm_vis = torchsde.BrownianInterval(
         t0=t0, t1=6, size=(batch_size, latent_size,), device=device, levy_area_approximation="space-time")
-    vis(xs, ts, latent_sde, bm_vis, 'test.pdf')
-
-    print(xs[:, 0, : ])
-
-    
+    # vis(xs, ts, latent_sde, bm_vis, 'test.pdf')
+    trainBarrier(latent_sde, batch_size)
     assert False
+
     
     ## fine-tune controller
     # Barrier = BarrierNN(state_size=2, hidden_size=64).to(device)

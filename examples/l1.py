@@ -303,7 +303,7 @@ def make_dataset(t0, t1, batch_size, data_size, noise_std, train_dir, device, co
 
 
 def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
-    fig = plt.figure(figsize=(20, 9))
+    fig = plt.figure(figsize=(20, 8))
     gs = gridspec.GridSpec(1, 2)
     ax00 = fig.add_subplot(gs[0, 0])
     ax01 = fig.add_subplot(gs[0, 1])
@@ -313,9 +313,13 @@ def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
     z1, z2 = np.split(xs.cpu().numpy(), indices_or_sections=2, axis=-1)
     [ax00.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax00.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
-    # ax00.set_xlabel('$z_1$', labelpad=0., fontsize=16)
-    # ax00.set_ylabel('$z_2$', labelpad=.5, fontsize=16)
-    ax00.set_title('Data', fontsize=20)
+    ax00.set_xlabel('$s_1$', labelpad=0., fontsize=23)
+    ax00.set_ylabel('$s_2$', labelpad=.5, fontsize=23)
+    ax00.set_title('Real', fontsize=30)
+
+    # ax00.set_xticks(fontsize=18)
+    # ax00.set_yticks(fontsize=18)
+
 
     # Right plot: samples from learned model.
     xs = latent_sde.sample(batch_size=xs.size(1), ts=ts, bm=bm_vis).cpu().numpy()
@@ -324,7 +328,14 @@ def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
     ax01.add_patch(matplotlib.patches.Rectangle((-1, 1.2), 1, 0.5, color='pink'))
     [ax01.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax01.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
-    ax01.set_title('Samples', fontsize=20)
+    ax01.set_title('Generative', fontsize=30)
+    ax01.set_xlabel('$\hat{s}_1}$', labelpad=0., fontsize=23)
+    ax01.set_ylabel('$\hat{s}_2}$', labelpad=.5, fontsize=23)
+    # ax01.set_xticks(fontsize=18)
+    # ax01.set_yticks(fontsize=18)
+    lab = ax00.get_xticklabels() + ax00.get_yticklabels() + ax01.get_xticklabels() + ax01.get_yticklabels()
+    for l in lab:
+        l.set_fontsize(18)
 
     plt.savefig(img_path, bbox_inches='tight')
     plt.close()
@@ -447,7 +458,8 @@ def main(
         hidden_size=hidden_size,
     ).to(device)
 
-    checkpoint = torch.load('./train/new/model.pth')
+    # checkpoint = torch.load('./train/new/model.pth')
+    checkpoint = torch.load('./train/model_1.pth')
     latent_sde.pz0_mean = checkpoint['pz0_mean']
     latent_sde.pz0_logstd = checkpoint['pz0_logstd']
     latent_sde.h_net = checkpoint['h_net']
@@ -465,7 +477,7 @@ def main(
     for _ in range(20):
         latent_sde.setlatentInit()
         latent_sde.fixu = False
-        flag = trainBarrier(latent_sde)            
+        # flag = trainBarrier(latent_sde)            
 
         latent_sde.fixu = True
         print('controller after control optimization: ', latent_sde.c_net.lin.weight.data)
@@ -478,7 +490,7 @@ def main(
         bm_vis = torchsde.BrownianInterval(
             t0=t0, t1=t1, size=(batch_size, latent_size,), device=device, levy_area_approximation="space-time")
 
-        for global_step in tqdm.tqdm(range(1, 200 + 1)):
+        for global_step in tqdm.tqdm(range(0, 200 + 1)):
             latent_sde.zero_grad()
             log_pxs, log_ratio, r = latent_sde(xs, ts, noise_std, adjoint, method)
             # print(log_pxs, log_ratio)
@@ -499,11 +511,11 @@ def main(
                 img_path = os.path.join(train_dir, f'seed_'+seed+'_step_'+str(global_step)+'_.pdf')
                 vis(xs, ts, latent_sde, bm_vis, img_path)
 
-            if global_step % 100 == 0:
-                model_path = os.path.join(train_dir, 'model_'+seed+'.pth')
-                torch.save({'pz0_mean': latent_sde.pz0_mean, 'pz0_logstd': latent_sde.pz0_logstd, 
-                    'h_net':latent_sde.h_net, 'projector':latent_sde.projector, 'g_nets':latent_sde.g_nets, 
-                    'encoder':latent_sde.encoder, 'qz0_net':latent_sde.qz0_net, 'f_net':latent_sde.f_net, 'c_net':latent_sde.c_net}, model_path)
+            # if global_step % 100 == 0:
+            #     model_path = os.path.join(train_dir, 'model_'+seed+'.pth')
+            #     torch.save({'pz0_mean': latent_sde.pz0_mean, 'pz0_logstd': latent_sde.pz0_logstd, 
+            #         'h_net':latent_sde.h_net, 'projector':latent_sde.projector, 'g_nets':latent_sde.g_nets, 
+            #         'encoder':latent_sde.encoder, 'qz0_net':latent_sde.qz0_net, 'f_net':latent_sde.f_net, 'c_net':latent_sde.c_net}, model_path)
 
         print('controller after generative modeling: ', latent_sde.c_net.lin.weight.data)
 

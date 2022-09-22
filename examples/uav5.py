@@ -29,7 +29,18 @@ import matplotlib
 
 import torchsde
 
-seed = 'uav5'
+seed = 'uav_v5'
+
+_RX = -8.0
+_RY = -6.0
+_RZ = 9.0
+_UNSAFE_CENTER = (-4.5, -3.5)
+_UNSAFE_RADIUS = 0.25
+_UNSAFE_HEIGHT = 2.0
+_BARRIER_ITERATIONS = 20
+_NUM = 200
+_TOTAL_ITERATIONS = 500
+
 
 class LinearScheduler(object):
     def __init__(self, iters, maxval=1.0):
@@ -115,11 +126,12 @@ class LatentSDE(nn.Module):
 
 
         self.h_net = nn.Sequential(
-            nn.Linear(latent_size + 4, hidden_size),
-            nn.Softplus(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.Softplus(),
-            nn.Linear(hidden_size, latent_size),
+            # nn.Linear(latent_size + 4, hidden_size),
+            nn.Linear(latent_size + 4, latent_size),
+            # nn.Softplus(),
+            # nn.Linear(hidden_size, hidden_size),
+            # nn.Softplus(),
+            # nn.Linear(hidden_size, latent_size),
         )
         # This needs to be an element-wise function for the SDE to satisfy diagonal noise.
         self.g_nets = nn.ModuleList(
@@ -222,7 +234,7 @@ class LatentSDE(nn.Module):
     def setlatentInit(self):
         for _ in range(10):
             initx0 = self.projector(self.pz0_mean)
-            target = torch.Tensor([[-8, -6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]]).to('cuda')
+            target = torch.Tensor([[_RX, _RY, _RZ, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]]).to('cuda')
            
             opt = torch.optim.Adam([self.pz0_mean], lr=0.1)
             loss = torch.cdist(initx0, target, p=2)
@@ -230,7 +242,7 @@ class LatentSDE(nn.Module):
             opt.step()
 
 
-def make_dataset(batch_size, control, device, N=85):
+def make_dataset(batch_size, control, device, N=60):
     # --------------------------- load environment ----------------------------------------
     uav = JinEnv.Quadrotor()
     uav.initDyn(Jx=1, Jy=1, Jz=1, mass=1, l=1, c=0.01)
@@ -244,7 +256,7 @@ def make_dataset(batch_size, control, device, N=85):
         v = np.random.normal(0, 1)
         w = np.random.normal(0, 1)
         norm = (u**2 + v*v + w*w)**(0.5)
-        r_I = [u / norm * 0.1  - 8, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
+        r_I = [u / norm * 0.1  + _RX, v / norm * 0.1  + _RY, w / norm * 0.1 + _RZ] 
         ini_v_I = [0.0, 0.0, 0.0]
         ini_q = JinEnv.toQuaternion(0,[1,-1,1])
         ini_w = [0.0, 0.0, 0.0]
@@ -274,26 +286,36 @@ def make_dataset(batch_size, control, device, N=85):
 
 
 def vis(xs, ts, latent_sde, bm_vis, img_path, num_samples=10):
-    fig = plt.figure(figsize=(20, 9))
-    gs = gridspec.GridSpec(1, 2)
+    fig = plt.figure(figsize=(20, 18))
+    gs = gridspec.GridSpec(2, 2)
     ax00 = fig.add_subplot(gs[0, 0])
     ax01 = fig.add_subplot(gs[0, 1])
+    ax10 = fig.add_subplot(gs[1, 0])
+    ax11 = fig.add_subplot(gs[1, 1])
 
     # Left plot: data.
-    ax00.add_patch(matplotlib.patches.Circle((-5, -3), 1, color='pink'))
-    z1, z2 = np.split(xs.cpu().numpy()[:, :, :2], indices_or_sections=2, axis=-1)
+    ax00.add_patch(matplotlib.patches.Circle(_UNSAFE_CENTER, _UNSAFE_RADIUS, color='pink'))
+    z1, z2, z3 = np.split(xs.cpu().numpy()[:, :, :3], indices_or_sections=3, axis=-1)
     [ax00.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax00.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
+    # ax00.set_xlabel('$z_1$', labelpad=0., fontsize=16)
+    # ax00.set_ylabel('$z_2$', labelpad=.5, fontsize=16)
     ax00.set_title('Data', fontsize=20)
+    ax10.add_patch(matplotlib.patches.Rectangle((_UNSAFE_CENTER[0]-_UNSAFE_RADIUS, -_UNSAFE_HEIGHT), 2*_UNSAFE_RADIUS, 2*_UNSAFE_HEIGHT + 2, color='pink'))
+    [ax10.plot(z1[:, i, 0], z3[:, i, 0]) for i in range(num_samples)]
+    ax10.scatter(z1[0, :num_samples, 0], z3[0, :num_samples, 0], marker='x')
 
     # Right plot: samples from learned model.
     xs = latent_sde.sample(batch_size=xs.size(1), ts=ts, bm=bm_vis).detach().cpu().numpy()
-    z1, z2 = np.split(xs[:, :, :2], indices_or_sections=2, axis=-1)
+    z1, z2, z3 = np.split(xs[:, :, :3], indices_or_sections=3, axis=-1)
     
-    ax01.add_patch(matplotlib.patches.Circle((-5, -3), 1, color='pink'))
+    ax01.add_patch(matplotlib.patches.Circle(_UNSAFE_CENTER, _UNSAFE_RADIUS, color='pink'))
     [ax01.plot(z1[:, i, 0], z2[:, i, 0]) for i in range(num_samples)]
     ax01.scatter(z1[0, :num_samples, 0], z2[0, :num_samples, 0], marker='x')
     ax01.set_title('Samples', fontsize=20)
+    ax11.add_patch(matplotlib.patches.Rectangle((_UNSAFE_CENTER[0]-_UNSAFE_RADIUS, -_UNSAFE_HEIGHT), 2*_UNSAFE_RADIUS, 2*_UNSAFE_HEIGHT + 2, color='pink'))
+    [ax11.plot(z1[:, i, 0], z3[:, i, 0]) for i in range(num_samples)]
+    ax11.scatter(z1[0, :num_samples, 0], z3[0, :num_samples, 0], marker='x')
 
     plt.savefig(img_path, bbox_inches='tight')
     plt.close()
@@ -308,18 +330,26 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
 
     optimizer = torch.optim.Adam(Barrier.parameters())
     if Conly:
-        con_opt = torch.optim.Adam(latent_sde.c_net.parameters(), lr=1e-4)
+        con_opt = torch.optim.Adam(latent_sde.c_net.parameters(), lr=3e-5)
     else:
-        con_opt = torch.optim.Adam(latent_sde.parameters(), lr=1e-4)
+        con_opt = torch.optim.Adam(latent_sde.parameters(), lr=3e-5)
+
+    reward_weight = 0.1 * np.ones(13)
+    reward_weight[:2] = 10 * np.ones(2)
+    reward_weight[2] = 50
+    reward_weight[5] = 5
+    reward_weight = torch.from_numpy(reward_weight).to(device).float()
+
     ### samples ###
-    for it in range(60):
+    for it in range(_BARRIER_ITERATIONS):
+        t0 = time.time()
         _x0 = []
         for _ in range(batch_size):
             u = np.random.normal(0, 1)
             v = np.random.normal(0, 1)
             w = np.random.normal(0, 1)
             norm = (u**2 + v*v + w*w)**(0.5)
-            r_I = [u / norm * 0.1  - 8, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
+            r_I = [u / norm * 0.1  + _RX, v / norm * 0.1 + _RY, w / norm * 0.1 + _RZ] 
             ini_v_I = [0.0, 0.0, 0.0]
             ini_q = [1.0, 0.0, 0.0, 0.0]
             ini_w = [0.0, 0.0, 0.0]
@@ -330,12 +360,14 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
 
         _xu = []
         for _ in range(batch_size):
+            ur = np.random.normal(0, 1)
+            vr = np.random.normal(0, 1)
+            norm = (ur*ur + vr*vr)**(0.5)
+            r_I = [ur / norm * _UNSAFE_RADIUS + _UNSAFE_CENTER[0], vr / norm * _UNSAFE_RADIUS  + _UNSAFE_CENTER[1], np.random.uniform(-_UNSAFE_HEIGHT, _UNSAFE_HEIGHT + 2)] 
             u = np.random.normal(0, 1)
             v = np.random.normal(0, 1)
             p = np.random.normal(0, 1)
             q = np.random.normal(0, 1)
-            norm = (u**2 + v*v)**(0.5)
-            r_I = [u / norm - 5, v / norm - 3, np.random.uniform(-10, 10)] 
             ini_v_I = [np.random.uniform(-10, 10), np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
             
             norm2 = (u**2 + v*v + q*q + p*p)**(0.5)
@@ -344,6 +376,9 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
             ini_state = r_I + ini_v_I + ini_q + ini_w
             _xu.append(np.array(ini_state))
         _xu = torch.from_numpy(np.array(_xu)).to(device).float()
+
+        
+        # t1 = time.time()
         
         # x = 6*torch.rand(size=(batch_size, 1)) - 3
         # x = -1 + 1*torch.rand(size=(batch_size, 1))
@@ -354,27 +389,45 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
         # y = 6*torch.rand(size=(batch_size, 1)) - 3
         # _xx = torch.cat((x, y), dim=1).to(device)
 
-        ts = torch.linspace(0, 1, steps=50, device=device)
+        ts = torch.linspace(0, 2, steps=100, device=device)
         _xs = latent_sde.sample(batch_size=_x0.size(0), ts=ts)
         # print(torch.norm(_xs, dim=2).shape,torch.norm(_xs, dim=2), torch.mean(torch.norm(_xs, dim=2), dim=(1)).shape)
         # assert False
-        R = 10*torch.mean(torch.norm(_xs, dim=2), dim=(1))[-1]
+        _xs_reward = reward_weight * _xs
+        R = torch.sum(torch.mean(torch.norm(_xs_reward, dim=2), dim=(1)))
+
+        # t2 = time.time()
    
         optimizer.zero_grad()
         con_opt.zero_grad()
 
-        Lie = torch.mean(Barrier(_xs[-1]) - Barrier(_xs[0]))
-        Lie_max = torch.max(Barrier(_xs[-1]) - Barrier(_xs[0]))
-        for i in range(_xs.size(0) - 1):
-            Lie += torch.mean(Barrier(_xs[-1]) - Barrier(_xs[i+1])) 
-            Lie_max = max(torch.max(Barrier(_xs[i+1]) - Barrier(_xs[i])), Lie_max) 
-        Lie /= 10
+        
+        # Lie = torch.mean(Barrier(_xs[-1]) - Barrier(_xs[0]))
+        # Lie_max = torch.max(Barrier(_xs[-1]) - Barrier(_xs[0]))
+        # for i in range(_xs.size(0) - 1):
+        #     Lie += torch.mean(Barrier(_xs[-1]) - Barrier(_xs[i+1])) 
+        #     Lie_max = max(torch.max(Barrier(_xs[i+1]) - Barrier(_xs[i])), Lie_max) 
+        # Lie /= 10
 
-        Unsafe = torch.mean(1 - Barrier(_xu))
-        Unsafe_min = torch.min(Barrier(_xu))
-        Init = torch.mean(Barrier(_x0))
-        # print(Barrier(_x0), Barrier(_x0).shape)
-        Init_max = torch.max(Barrier(_x0))
+        barrier_xs = Barrier(_xs)
+        Lie = torch.sum(torch.mean(barrier_xs[-1]) - torch.mean(barrier_xs, dim=1)) / 10
+        Lie_max = torch.max(barrier_xs[1:] - barrier_xs[:-1])
+        Lie_max = torch.maximum(Lie_max, torch.max(barrier_xs[-1] - barrier_xs[0]))
+
+        # Unsafe = torch.mean(1 - Barrier(_xu))
+        # Unsafe_min = torch.min(Barrier(_xu))
+        # Init = torch.mean(Barrier(_x0))
+        # # print(Barrier(_x0), Barrier(_x0).shape)
+        # Init_max = torch.max(Barrier(_x0))
+
+        barrier_xu = Barrier(_xu)
+        barrier_x0 = Barrier(_x0)
+        Unsafe = torch.mean(1 - barrier_xu)
+        Unsafe_min = torch.min(barrier_xu)
+        Init = torch.mean(barrier_x0)
+        Init_max = torch.max(barrier_x0)
+
+        # t3 = time.time()
 
         # if Test:
         #     print(Unsafe.item(), Unsafe_min, Init.item(), 
@@ -401,17 +454,21 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
         #     plt.savefig('barrier'+seed+'.png')
         #     return True
 
-        loss = 5*Lie_max + 5*(1 - Unsafe_min) + Init_max + R
+        loss = 2*Lie_max + 2*(1 - Unsafe_min) + Init_max + R
         # loss = R
         loss.backward()
-        if it % 10 == 0:
+        if (it+1) % 10 == 0:
             print('Iter:{}, loss:{:.2f}, Reward:-{:.2f}, Lie:{:.2f}, Unsafe:{:.2f}, Init:{:.2f}, Lie_max:{:.2f}, Unsafe_min:{:.2f}, Init_max:{:.2f}'
-                .format(it,  loss.item(), R.item(), Lie.item(), Unsafe.item(), Init.item(), Lie_max.item(), Unsafe_min.item(), Init_max.item()))
+                .format(it,  loss.item(), R.item(), Lie.item(), Unsafe.item(), Init.item(), Lie_max.item(), Unsafe_min.item(), Init_max.item()), flush=True)
             # print(latent_sde.c_net.lin.weight.data, latent_sde.c_net.lin.weight.data.grad)
 
             # print(latent_sde.c_net.lin1.weight.data[:5])
         optimizer.step()
         con_opt.step()
+
+        # t4 = time.time()
+
+        # print((t1-t0)/(t4-t0), (t2-t1)/(t4-t0), (t3-t2)/(t4-t0), (t4-t3)/(t4-t0), t4-t0)
 
 
     # return False
@@ -419,20 +476,20 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
 
 def main(
         batch_size=64,
-        latent_size=16,
+        latent_size=20,
         data_size=13,
         context_size=64,
         hidden_size=128,
         lr_init=1e-2,
         t0=0.,
-        t1=6,
+        t1=1.7,
         lr_gamma=0.997,
         num_iters=5000,
         kl_anneal_iters=1000,
         pause_every=50,
         noise_std=0.01,
         adjoint=False,
-        train_dir='./train/uav/',
+        train_dir='./train/uav/0622_goodstart/',
         method="euler",
 ):
 
@@ -445,7 +502,7 @@ def main(
         hidden_size=hidden_size,
     ).to(device)
 
-    checkpoint = torch.load('./train/uav/model_uav3_explore.pth')
+    checkpoint = torch.load('./train/uav/0620fix/nomial_model.pth')
     latent_sde.pz0_mean = checkpoint['pz0_mean']
     latent_sde.pz0_logstd = checkpoint['pz0_logstd']
     latent_sde.h_net = checkpoint['h_net']
@@ -455,28 +512,37 @@ def main(
     latent_sde.qz0_net = checkpoint['qz0_net']
     latent_sde.encoder = checkpoint['encoder']
     latent_sde.c_net = checkpoint['c_net']
+
     # latent_sde.c_net.load_state_dict(torch.load('./train/uav/nominal_control.pth'))
     
-    latent_sde.setlatentInit()
+    # latent_sde.setlatentInit()
     # xs, ts = make_dataset(batch_size=batch_size, control=latent_sde.c_net, device=device)
     # assert False
     
     ## fine-tune controller
     # Barrier = BarrierNN(state_size=2, hidden_size=64).to(device)
     prev_flag = False
-    for ep in range(100):
-        latent_sde.setlatentInit()
-        latent_sde.fixu = False
-        # if ep > 0:
-        trainBarrier(latent_sde)
-        # else:
-        #     trainBarrier(latent_sde, Conly=True)            
 
-        latent_sde.fixu = True
-        # print('controller after control optimization: ', latent_sde.c_net.lin1.weight.data[:1])
+    total_sum = 0
+    for ep in range(_TOTAL_ITERATIONS):
+        latent_sde.fixu = False
+        trainBarrier(latent_sde, batch_size=batch_size)         
+        latent_sde.fixu = False
+
         xs, ts = make_dataset(batch_size=batch_size, control=latent_sde.c_net, device=device)
         print(xs[-1, 0, :])
-        optimizer = optim.Adam(params=latent_sde.parameters(), lr=1e-3)
+        # optimizer = optim.Adam(params=latent_sde.parameters(), lr=1e-4)
+
+        optimizer = optim.Adam([
+                                    {'params': latent_sde.pz0_mean},
+                                    {'params': latent_sde.pz0_logstd},
+                                    {'params': latent_sde.h_net.parameters()},
+                                    {'params': latent_sde.projector.parameters()},
+                                    {'params': latent_sde.g_nets.parameters()},
+                                    {'params': latent_sde.f_net.parameters()},
+                                    {'params': latent_sde.qz0_net.parameters()},
+                                    {'params': latent_sde.encoder.parameters()},
+                                ], lr=1e-4)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_gamma)
         kl_scheduler = LinearScheduler(iters=kl_anneal_iters)
 
@@ -485,10 +551,12 @@ def main(
             t0=t0, t1=t1, size=(batch_size, latent_size,), device=device, levy_area_approximation="space-time")
 
         # if ep == 0:
-        #     num = 500
+        #     num = 1500
         # else:
-        num = 200
+        num = _NUM
         for global_step in tqdm.tqdm(range(1, num + 1)):
+            if (global_step+1) % 500 == 0:
+                latent_sde.setlatentInit()
             latent_sde.zero_grad()
             log_pxs, log_ratio, r = latent_sde(xs, ts, noise_std, adjoint, method)
             loss = -log_pxs + log_ratio * kl_scheduler.val
@@ -498,17 +566,19 @@ def main(
             scheduler.step()
             kl_scheduler.step()
 
+            total_sum += 1
+
             if global_step % pause_every == 0:
                 lr_now = optimizer.param_groups[0]['lr']
-                logging.warning(
+                logging.info(
                     f'global_step: {global_step:06d}, lr: {lr_now:.5f}, '
                     f'log_pxs: {log_pxs:.4f}, log_ratio: {log_ratio:.4f} loss: {loss:.4f}, kl_coeff: {kl_scheduler.val:.4f}'
                 )
-                img_path = os.path.join(train_dir, f'seed_'+seed+'_step_'+str(global_step)+'_.pdf')
+                img_path = os.path.join(train_dir, f'seed_'+seed+'_step_'+str(total_sum)+'_.png')
                 vis(xs, ts, latent_sde, bm_vis, img_path)
 
             if global_step % 100 == 0:
-                model_path = os.path.join(train_dir, 'model_'+seed+'.pth')
+                model_path = os.path.join(train_dir, 'model_'+seed+'_step_'+str(total_sum)+'.pth')
                 torch.save({'pz0_mean': latent_sde.pz0_mean, 'pz0_logstd': latent_sde.pz0_logstd, 
                     'h_net':latent_sde.h_net, 'projector':latent_sde.projector, 'g_nets':latent_sde.g_nets, 
                     'encoder':latent_sde.encoder, 'qz0_net':latent_sde.qz0_net, 'f_net':latent_sde.f_net, 'c_net':latent_sde.c_net}, model_path)
@@ -528,15 +598,18 @@ def main(
 
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # policy = Controller().to(device)
+    # policy.load_state_dict(torch.load('./train/uav/nominal_control.pth'))
 
-    # xs, ts = make_dataset(batch_size=1024, control=policy, device=device)
+    # xs, ts = make_dataset(batch_size=batch_size, control=policy, device=device)
     # latent_sde = LatentSDE(
     #     data_size=data_size,
     #     latent_size=latent_size,
     #     context_size=context_size,
     #     hidden_size=hidden_size,
-    #     policy=policy
     # ).to(device)
+    # latent_sde.c_net.load_state_dict(torch.load('./train/uav/nominal_control.pth'))
+    # # latent_sde.fixu = True
+
     # optimizer = optim.Adam(params=latent_sde.parameters(), lr=lr_init)
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_gamma)
     # kl_scheduler = LinearScheduler(iters=kl_anneal_iters)
@@ -545,9 +618,9 @@ def main(
     # bm_vis = torchsde.BrownianInterval(
     #     t0=t0, t1=t1, size=(batch_size, latent_size,), device=device, levy_area_approximation="space-time")
 
-    # for global_step in tqdm.tqdm(range(1, num_iters + 1)):
-    #     if global_step % 10 == 0:
-    #         latent_sde.setlatentInit()
+    # for global_step in tqdm.tqdm(range(0, num_iters + 1)):
+    #     # if global_step % 10 == 0:
+    #     #     latent_sde.setlatentInit()
     #     latent_sde.zero_grad()
     #     log_pxs, log_ratio, r = latent_sde(xs, ts, noise_std, adjoint, method)
     #     loss = -log_pxs + log_ratio * kl_scheduler.val
@@ -567,7 +640,7 @@ def main(
     #         vis(xs, ts, latent_sde, bm_vis, img_path)
 
     #     if global_step % 100 == 0:
-    #         model_path = os.path.join(train_dir, 'model.pth')
+    #         model_path = os.path.join(train_dir, 'nomial_model.pth')
     #         torch.save({'pz0_mean': latent_sde.pz0_mean, 'pz0_logstd': latent_sde.pz0_logstd, 
     #             'h_net':latent_sde.h_net, 'projector':latent_sde.projector, 'g_nets':latent_sde.g_nets, 
     #             'encoder':latent_sde.encoder, 'qz0_net':latent_sde.qz0_net, 'f_net':latent_sde.f_net, 'c_net':latent_sde.c_net}, model_path)
@@ -575,3 +648,10 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
+
+
+"""
+export CUDA_VISIBLE_DEVICES=7
+nohup python -m examples.uav3_v5 &>train_log/uav3_v5.log &
+echo $! > train_log/pid_uav3_v5.txt
+"""

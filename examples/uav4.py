@@ -222,7 +222,7 @@ class LatentSDE(nn.Module):
     def setlatentInit(self):
         for _ in range(10):
             initx0 = self.projector(self.pz0_mean)
-            target = torch.Tensor([[-8, -6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]]).to('cuda')
+            target = torch.Tensor([[-5, -6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]]).to('cuda')
            
             opt = torch.optim.Adam([self.pz0_mean], lr=0.1)
             loss = torch.cdist(initx0, target, p=2)
@@ -244,7 +244,7 @@ def make_dataset(batch_size, control, device, N=85):
         v = np.random.normal(0, 1)
         w = np.random.normal(0, 1)
         norm = (u**2 + v*v + w*w)**(0.5)
-        r_I = [u / norm * 0.1  - 8, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
+        r_I = [u / norm * 0.1  - 5, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
         ini_v_I = [0.0, 0.0, 0.0]
         ini_q = JinEnv.toQuaternion(0,[1,-1,1])
         # print(ini_q)
@@ -316,14 +316,14 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
     else:
         con_opt = torch.optim.Adam(latent_sde.parameters(), lr=3e-5)
     ### samples ###
-    for it in range(60):
+    for it in range(10):
         _x0 = []
         for _ in range(batch_size):
             u = np.random.normal(0, 1)
             v = np.random.normal(0, 1)
             w = np.random.normal(0, 1)
             norm = (u**2 + v*v + w*w)**(0.5)
-            r_I = [u / norm * 0.1  - 8, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
+            r_I = [u / norm * 0.1  - 5, v / norm * 0.1  - 6, w / norm * 0.1  + 9] 
             ini_v_I = [0.0, 0.0, 0.0]
             ini_q = [1.0, 0.0, 0.0, 0.0]
             ini_w = [0.0, 0.0, 0.0]
@@ -362,7 +362,7 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
         _xs = latent_sde.sample(batch_size=_x0.size(0), ts=ts)
         # print(torch.norm(_xs, dim=2).shape,torch.norm(_xs, dim=2), torch.mean(torch.norm(_xs, dim=2), dim=(1)).shape)
         # assert False
-        R = 5*torch.mean(torch.norm(_xs, dim=2), dim=(1))[-1]
+        R = torch.sum(torch.mean(torch.norm(_xs, dim=2), dim=(1))[-50:-1])
    
         optimizer.zero_grad()
         con_opt.zero_grad()
@@ -377,7 +377,6 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
         Unsafe = torch.mean(1 - Barrier(_xu))
         Unsafe_min = torch.min(Barrier(_xu))
         Init = torch.mean(Barrier(_x0))
-        # print(Barrier(_x0), Barrier(_x0).shape)
         Init_max = torch.max(Barrier(_x0))
 
         # if Test:
@@ -422,7 +421,7 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
 
 
 def main(
-        batch_size=1024,
+        batch_size=64,
         latent_size=24,
         data_size=13,
         context_size=64,
@@ -449,16 +448,16 @@ def main(
         hidden_size=hidden_size,
     ).to(device)
 
-    checkpoint = torch.load('./train/uav/model_uav3_init.pth')
-    latent_sde.pz0_mean = checkpoint['pz0_mean']
-    latent_sde.pz0_logstd = checkpoint['pz0_logstd']
-    latent_sde.h_net = checkpoint['h_net']
-    latent_sde.projector = checkpoint['projector']
-    latent_sde.g_nets = checkpoint['g_nets']
-    latent_sde.f_net = checkpoint['f_net']
-    latent_sde.qz0_net = checkpoint['qz0_net']
-    latent_sde.encoder = checkpoint['encoder']
-    latent_sde.c_net = checkpoint['c_net']
+    # checkpoint = torch.load('./train/uav/model_uav4.pth')
+    # latent_sde.pz0_mean = checkpoint['pz0_mean']
+    # latent_sde.pz0_logstd = checkpoint['pz0_logstd']
+    # latent_sde.h_net = checkpoint['h_net']
+    # latent_sde.projector = checkpoint['projector']
+    # latent_sde.g_nets = checkpoint['g_nets']
+    # latent_sde.f_net = checkpoint['f_net']
+    # latent_sde.qz0_net = checkpoint['qz0_net']
+    # latent_sde.encoder = checkpoint['encoder']
+    # latent_sde.c_net = checkpoint['c_net']
     # latent_sde.c_net.load_state_dict(torch.load('./train/uav/nominal_control.pth'))
     
     latent_sde.setlatentInit()
@@ -468,7 +467,7 @@ def main(
     ## fine-tune controller
     # Barrier = BarrierNN(state_size=2, hidden_size=64).to(device)
     prev_flag = False
-    for ep in range(100):
+    for ep in range(500):
         latent_sde.setlatentInit()
         latent_sde.fixu = False
         # if ep > 0:
@@ -491,7 +490,7 @@ def main(
         # if ep == 0:
         #     num = 500
         # else:
-        num = 200
+        num = 50
         for global_step in tqdm.tqdm(range(1, num + 1)):
             latent_sde.zero_grad()
             log_pxs, log_ratio, r = latent_sde(xs, ts, noise_std, adjoint, method)
@@ -511,7 +510,7 @@ def main(
                 img_path = os.path.join(train_dir, f'seed_'+seed+'_step_'+str(global_step)+'_.pdf')
                 vis(xs, ts, latent_sde, bm_vis, img_path)
 
-            if global_step % 100 == 0:
+            if global_step % 50 == 0:
                 model_path = os.path.join(train_dir, 'model_'+seed+'.pth')
                 torch.save({'pz0_mean': latent_sde.pz0_mean, 'pz0_logstd': latent_sde.pz0_logstd, 
                     'h_net':latent_sde.h_net, 'projector':latent_sde.projector, 'g_nets':latent_sde.g_nets, 

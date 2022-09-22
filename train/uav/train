@@ -1,0 +1,41 @@
+nohup: ignoring input
+Traceback (most recent call last):
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/runpy.py", line 193, in _run_module_as_main
+    "__main__", mod_spec)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/runpy.py", line 85, in _run_code
+    exec(code, run_globals)
+  File "/home/yws5606/torchsde/examples/uav7.py", line 650, in <module>
+    fire.Fire(main)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/fire/core.py", line 141, in Fire
+    component_trace = _Fire(component, args, parsed_flag_args, context, name)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/fire/core.py", line 471, in _Fire
+    target=component.__name__)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/fire/core.py", line 681, in _CallAndUpdateTrace
+    component = fn(*varargs, **kwargs)
+  File "/home/yws5606/torchsde/examples/uav7.py", line 529, in main
+    trainBarrier(latent_sde, batch_size=batch_size)         
+  File "/home/yws5606/torchsde/examples/uav7.py", line 393, in trainBarrier
+    _xs = latent_sde.sample(batch_size=_x0.size(0), ts=ts)
+  File "/home/yws5606/torchsde/examples/uav7.py", line 220, in sample
+    zs = torchsde.sdeint(self, z0, ts, names={'drift': 'h', 'diffusion':'g'}, dt=dt, bm=bm)
+  File "/home/yws5606/torchsde/torchsde/_core/sdeint.py", line 110, in sdeint
+    ys, extra_solver_state = solver.integrate(y0, ts, extra_solver_state)
+  File "/home/yws5606/torchsde/torchsde/_core/base_solver.py", line 145, in integrate
+    curr_y, curr_extra = self.step(curr_t, next_t, curr_y, curr_extra)
+  File "/home/yws5606/torchsde/torchsde/_core/methods/srk.py", line 86, in diagonal_or_scalar_step
+    g_prod = self.sde.g_prod(t0 + srid2.C1[s] * dt, H1s, g_weight)
+  File "/home/yws5606/torchsde/torchsde/_core/base_sde.py", line 109, in g_prod_default
+    return self.prod(self.g(t, y), v)
+  File "/home/yws5606/torchsde/examples/uav7.py", line 175, in g
+    out = [g_net_i(y_i) for (g_net_i, y_i) in zip(self.g_nets, y)]
+  File "/home/yws5606/torchsde/examples/uav7.py", line 175, in <listcomp>
+    out = [g_net_i(y_i) for (g_net_i, y_i) in zip(self.g_nets, y)]
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/torch/nn/modules/module.py", line 1110, in _call_impl
+    return forward_call(*input, **kwargs)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/torch/nn/modules/container.py", line 141, in forward
+    input = module(input)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/torch/nn/modules/module.py", line 1110, in _call_impl
+    return forward_call(*input, **kwargs)
+  File "/home/yws5606/miniconda3/envs/gymai/lib/python3.7/site-packages/torch/nn/modules/activation.py", line 293, in forward
+    return torch.sigmoid(input)
+KeyboardInterrupt

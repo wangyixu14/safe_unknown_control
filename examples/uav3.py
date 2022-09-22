@@ -377,7 +377,6 @@ def trainBarrier(latent_sde, batch_size=128, device='cuda', Test=False, Conly=Tr
         Unsafe = torch.mean(1 - Barrier(_xu))
         Unsafe_min = torch.min(Barrier(_xu))
         Init = torch.mean(Barrier(_x0))
-        # print(Barrier(_x0), Barrier(_x0).shape)
         Init_max = torch.max(Barrier(_x0))
 
         # if Test:
